@@ -50,9 +50,7 @@ jobs:
         with:
           repository: devopsyields/carpatos
           path: carpatos
-          # PAT fine-grained read-only la repo-ul carpatos (privat).
-          # Configurat ca secret CARPATOS_TOKEN in setarile acestui repo.
-          token: ${{ secrets.CARPATOS_TOKEN }}
+          # carpatos e public, GITHUB_TOKEN-ul implicit poate clona.
 
       - name: Instalez dependente sistem
         run: |
