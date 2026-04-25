@@ -1,0 +1,107 @@
+name: Build cpm repo si publica release
+
+# Trigger manual prin GitHub UI sau `gh workflow run`. Workflow-ul:
+#   1. Clone carpatos (sursele cu deb2cpm + build-cpm-repo)
+#   2. Descarca .deb-uri din ports.ubuntu.com pe baza seed-urilor
+#   3. Converteste fiecare in .cpm
+#   4. Publica pool/*.cpm + repo.index ca asset-uri pe un release nou
+#      al acestui repo (devopsyields/carpatos-repo).
+#
+# Folosim GITHUB_TOKEN-ul automat — workflow-ul ruleaza in carpatos-repo
+# si publica in carpatos-repo, deci nu avem nevoie de PAT cross-repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Pachete seed (separate cu spatii)"
+        required: true
+        default: "hello"
+      tag:
+        description: "Tag pentru release (ex: v0.1.1)"
+        required: true
+        default: "v0.1-auto"
+      arch:
+        description: "Arhitectura Debian (arm64 / amd64)"
+        required: true
+        default: "arm64"
+      ubuntu_release:
+        description: "Release Ubuntu (noble / jammy)"
+        required: true
+        default: "noble"
+      release_title:
+        description: "Titlu release"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # necesar pentru gh release create
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout carpatos-repo (acest repo, pentru workflow + README)
+        uses: actions/checkout@v4
+
+      - name: Checkout carpatos (sursele cu build-cpm-repo)
+        uses: actions/checkout@v4
+        with:
+          repository: devopsyields/carpatos
+          path: carpatos
+          # Token implicit (citire publica e suficient)
+
+      - name: Instalez dependente sistem
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 zstd curl
+
+      - name: Construiesc repo .cpm
+        run: |
+          python3 carpatos/scripts/build-cpm-repo.py \
+            ${{ inputs.seeds }} \
+            -o build/ \
+            -r "${{ inputs.ubuntu_release }}" \
+            -a "${{ inputs.arch }}" \
+            -v
+
+      - name: Sumar
+        run: |
+          echo "=== pachete generate ==="
+          ls -la build/pool/ | head -20
+          echo "=== repo.index ==="
+          wc -l build/repo.index
+          echo "=== dimensiuni ==="
+          du -sh build/cache build/pool build/repo.index
+
+      - name: Sterg cache (nu publicam .deb-urile)
+        run: rm -rf build/cache
+
+      - name: Publica release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="${{ inputs.release_title }}"
+          if [ -z "$TITLE" ]; then
+            TITLE="Auto build ${{ inputs.tag }} (${{ inputs.ubuntu_release }}/${{ inputs.arch }})"
+          fi
+          NOTES=$(cat <<EOF
+          Auto-build prin GitHub Actions.
+
+          - Seed: \`${{ inputs.seeds }}\`
+          - Ubuntu: ${{ inputs.ubuntu_release }} / ${{ inputs.arch }}
+          - Run: ${{ github.run_id }}
+
+          Configurare client cpm:
+          \`\`\`sh
+          echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}" \\
+            | sudo tee /etc/cpm/repo.url
+          cpm update && cpm install <pkg>
+          \`\`\`
+          EOF
+          )
+          gh release create "${{ inputs.tag }}" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            build/pool/*.cpm build/repo.index
