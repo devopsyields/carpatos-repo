@@ -127,6 +127,10 @@ jobs:
           \`\`\`
           EOF
           )
+          # Sterg release-ul daca exista (run anterior esuat poate sa fi
+          # creat unul partial — idempotenta).
+          gh release delete "${{ inputs.tag }}" --yes --cleanup-tag 2>/dev/null || true
+
           # Creez release-ul fara asset-uri (sa nu hit secondary rate limit
           # cu 1500+ uploads paralele).
           gh release create "${{ inputs.tag }}" \
