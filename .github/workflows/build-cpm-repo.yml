@@ -127,7 +127,42 @@ jobs:
           \`\`\`
           EOF
           )
+          # Creez release-ul fara asset-uri (sa nu hit secondary rate limit
+          # cu 1500+ uploads paralele).
           gh release create "${{ inputs.tag }}" \
             --title "$TITLE" \
-            --notes "$NOTES" \
-            build/pool/*.cpm build/repo.index
+            --notes "$NOTES"
+
+          # Upload chunk cu retry. ~25 fisiere / 12s = ~2 fisiere/sec, sub
+          # secondary rate limit. Cu 1500 pachete -> ~12-15 minute upload.
+          upload_chunk() {
+            local attempt=1
+            while [ $attempt -le 5 ]; do
+              if gh release upload "${{ inputs.tag }}" "$@"; then
+                return 0
+              fi
+              echo "[warn] upload esuat (incercare $attempt/5), astept 90s..."
+              sleep 90
+              attempt=$((attempt + 1))
+            done
+            echo "[err] upload esuat dupa 5 incercari" >&2
+            return 1
+          }
+
+          # Inta repo.index (clientii il fetcheaza primul)
+          upload_chunk build/repo.index
+
+          # Apoi pool, in chunk-uri de 25
+          chunk=()
+          i=0
+          for f in build/pool/*.cpm; do
+            chunk+=("$f")
+            i=$((i + 1))
+            if [ $((i % 25)) -eq 0 ]; then
+              upload_chunk "${chunk[@]}"
+              chunk=()
+              sleep 12
+            fi
+          done
+          [ ${#chunk[@]} -gt 0 ] && upload_chunk "${chunk[@]}"
+          echo "[done] $i pachete uploadate"
