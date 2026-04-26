@@ -33,6 +33,10 @@ on:
         description: "Titlu release"
         required: false
         default: ""
+  schedule:
+    # Sambata 04:00 UTC (sub trafic redus). Reconstruieste tag-ul
+    # `latest-weekly` cu seed default scripts/cpm-essentials.txt.
+    - cron: "0 4 * * 6"
 
 permissions:
   contents: write   # necesar pentru gh release create
@@ -41,6 +45,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120   # 1500+ pachete pot dura
+    env:
+      # Tag/arh/release calculate aici ca sa fie consistente intre triggere.
+      # Pentru schedule (cron), inputs sunt vide -> folosim valori default.
+      TAG: ${{ inputs.tag || 'latest-weekly' }}
+      ARCH: ${{ inputs.arch || 'arm64' }}
+      UBUNTU_REL: ${{ inputs.ubuntu_release || 'noble' }}
+      SEEDS: ${{ inputs.seeds }}
     steps:
       - name: Checkout carpatos-repo (acest repo, pentru workflow + README)
         uses: actions/checkout@v4
@@ -66,22 +77,16 @@ jobs:
 
       - name: Construiesc repo .cpm
         run: |
-          if [ -z "${{ inputs.seeds }}" ]; then
+          if [ -z "$SEEDS" ]; then
             echo "[info] folosesc carpatos/scripts/cpm-essentials.txt"
             python3 carpatos/scripts/build-cpm-repo.py \
               --seed-file carpatos/scripts/cpm-essentials.txt \
-              -o build/ \
-              -r "${{ inputs.ubuntu_release }}" \
-              -a "${{ inputs.arch }}" \
-              -v
+              -o build/ -r "$UBUNTU_REL" -a "$ARCH" -v
           else
-            echo "[info] folosesc seed-uri inline: ${{ inputs.seeds }}"
+            echo "[info] folosesc seed-uri inline: $SEEDS"
             python3 carpatos/scripts/build-cpm-repo.py \
-              ${{ inputs.seeds }} \
-              -o build/ \
-              -r "${{ inputs.ubuntu_release }}" \
-              -a "${{ inputs.arch }}" \
-              -v
+              $SEEDS \
+              -o build/ -r "$UBUNTU_REL" -a "$ARCH" -v
           fi
 
       - name: Sumar
@@ -104,45 +109,44 @@ jobs:
         run: |
           TITLE="${{ inputs.release_title }}"
           if [ -z "$TITLE" ]; then
-            TITLE="Auto build ${{ inputs.tag }} (${{ inputs.ubuntu_release }}/${{ inputs.arch }})"
+            TITLE="Auto build $TAG ($UBUNTU_REL/$ARCH)"
           fi
-          SEED_DESC="${{ inputs.seeds }}"
+          SEED_DESC="$SEEDS"
           if [ -z "$SEED_DESC" ]; then
             SEED_DESC="(scripts/cpm-essentials.txt)"
           fi
           NPACK=$(wc -l < build/repo.index)
+          TRIGGER="${{ github.event_name }}"
           NOTES=$(cat <<EOF
-          Auto-build prin GitHub Actions.
+          Auto-build prin GitHub Actions ($TRIGGER).
 
           - Seed: $SEED_DESC
-          - Ubuntu: ${{ inputs.ubuntu_release }} / ${{ inputs.arch }}
+          - Ubuntu: $UBUNTU_REL / $ARCH
           - Pachete in repo: $NPACK
           - Run: ${{ github.run_id }}
 
           Configurare client cpm:
           \`\`\`sh
-          echo "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}" \\
+          echo "https://github.com/${{ github.repository }}/releases/download/$TAG" \\
             | sudo tee /etc/cpm/repo.url
           cpm update && cpm install <pkg>
           \`\`\`
           EOF
           )
-          # Sterg release-ul daca exista (run anterior esuat poate sa fi
-          # creat unul partial — idempotenta).
-          gh release delete "${{ inputs.tag }}" --yes --cleanup-tag 2>/dev/null || true
+          # Sterg release-ul daca exista (idempotenta — utilizat la run-uri
+          # esuate sau la rebuild scheduled cu acelasi tag).
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
 
           # Creez release-ul fara asset-uri (sa nu hit secondary rate limit
           # cu 1500+ uploads paralele).
-          gh release create "${{ inputs.tag }}" \
-            --title "$TITLE" \
-            --notes "$NOTES"
+          gh release create "$TAG" --title "$TITLE" --notes "$NOTES"
 
           # Upload chunk cu retry. ~25 fisiere / 12s = ~2 fisiere/sec, sub
           # secondary rate limit. Cu 1500 pachete -> ~12-15 minute upload.
           upload_chunk() {
             local attempt=1
             while [ $attempt -le 5 ]; do
-              if gh release upload "${{ inputs.tag }}" "$@"; then
+              if gh release upload "$TAG" "$@"; then
                 return 0
               fi
               echo "[warn] upload esuat (incercare $attempt/5), astept 90s..."
